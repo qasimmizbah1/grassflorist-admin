@@ -208,6 +208,7 @@ class StoreDownloadImagesCommand extends Command
         $encodedUrl = $this->encodeUrl($url);
 
         // Method 1: Laravel Http Client with User-Agent and SSL bypass
+        $lastError = null;
         try {
             $response = Http::withoutVerifying()
                 ->timeout(30)
@@ -220,9 +221,11 @@ class StoreDownloadImagesCommand extends Command
             if ($response->successful() && strlen($response->body()) > 50) {
                 $disk->put($relativePath, $response->body());
                 return $relativePath;
+            } else {
+                $lastError = "HTTP Status: " . $response->status() . " Body length: " . strlen($response->body());
             }
         } catch (\Exception $e) {
-            // Fall through to cURL
+            $lastError = "Http Exception: " . $e->getMessage();
         }
 
         // Method 2: Raw cURL Fallback
@@ -240,15 +243,46 @@ class StoreDownloadImagesCommand extends Command
                 ]);
                 $body = curl_exec($ch);
                 $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                $curlErr = curl_error($ch);
                 curl_close($ch);
 
                 if ($httpCode === 200 && is_string($body) && strlen($body) > 50) {
                     $disk->put($relativePath, $body);
                     return $relativePath;
+                } else {
+                    $lastError .= " | cURL Code: {$httpCode} Error: {$curlErr}";
                 }
             } catch (\Exception $e) {
-                // Ignore
+                $lastError .= " | cURL Exception: " . $e->getMessage();
             }
+        }
+
+        // Method 3: file_get_contents with stream context
+        try {
+            $ctx = stream_context_create([
+                'http' => [
+                    'timeout' => 30,
+                    'user_agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                ],
+                'ssl' => [
+                    'verify_peer' => false,
+                    'verify_peer_name' => false,
+                ],
+            ]);
+            $body = @file_get_contents($encodedUrl, false, $ctx);
+            if ($body && strlen($body) > 50) {
+                $disk->put($relativePath, $body);
+                return $relativePath;
+            }
+        } catch (\Exception $e) {
+            // Ignore
+        }
+
+        static $printedErrors = 0;
+        if ($printedErrors < 3) {
+            $this->newLine();
+            $this->error("❌ Download Failed for [{$url}]: {$lastError}");
+            $printedErrors++;
         }
 
         return null;
