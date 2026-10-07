@@ -166,18 +166,25 @@ class StoreDownloadImagesCommand extends Command
     protected function downloadFile(string $url, string $directory, $disk, bool $force = false): ?string
     {
         $url = trim($url);
-        if (empty($url) || ! filter_var($url, FILTER_VALIDATE_URL)) {
+        if (empty($url) || ! preg_match('#^https?://#i', $url)) {
             return null;
         }
 
-        // Extract filename from URL
-        $parsedUrl = parse_url($url, PHP_URL_PATH);
-        $originalFilename = basename($parsedUrl);
+        // Clean and decode original filename
+        $parsedPath = parse_url($url, PHP_URL_PATH);
+        if (! $parsedPath) {
+            return null;
+        }
+
+        $originalFilename = basename($parsedPath);
         $cleanFilename = urldecode($originalFilename);
 
-        // Sanitize filename to avoid weird character issues
+        // Sanitize target filename
         $info = pathinfo($cleanFilename);
         $name = Str::slug($info['filename'] ?? 'file');
+        if (empty($name)) {
+            $name = 'media-' . substr(md5($url), 0, 10);
+        }
         $ext = strtolower($info['extension'] ?? 'jpg');
         if (empty($ext) || strlen($ext) > 5) {
             $ext = 'jpg';
@@ -186,24 +193,90 @@ class StoreDownloadImagesCommand extends Command
         $targetFilename = "{$name}.{$ext}";
         $relativePath = "{$directory}/{$targetFilename}";
 
-        // If file already exists locally and force is false, just return relative path
+        // If file already exists locally and force is false, return relative path
         if (! $force && $disk->exists($relativePath)) {
             return $relativePath;
         }
 
+        // Ensure target directory exists on filesystem
+        $fullDirPath = storage_path('app/public/' . $directory);
+        if (! file_exists($fullDirPath)) {
+            @mkdir($fullDirPath, 0775, true);
+        }
+
+        // Properly encode URL path for UTF-8 / Arabic / Spaces
+        $encodedUrl = $this->encodeUrl($url);
+
+        // Method 1: Laravel Http Client with User-Agent and SSL bypass
         try {
             $response = Http::withoutVerifying()
                 ->timeout(30)
-                ->get($url);
+                ->withHeaders([
+                    'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                    'Accept' => 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+                ])
+                ->get($encodedUrl);
 
-            if ($response->successful()) {
+            if ($response->successful() && strlen($response->body()) > 50) {
                 $disk->put($relativePath, $response->body());
                 return $relativePath;
             }
         } catch (\Exception $e) {
-            // Silently continue or log if needed
+            // Fall through to cURL
+        }
+
+        // Method 2: Raw cURL Fallback
+        if (function_exists('curl_init')) {
+            try {
+                $ch = curl_init();
+                curl_setopt_array($ch, [
+                    CURLOPT_URL => $encodedUrl,
+                    CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_FOLLOWLOCATION => true,
+                    CURLOPT_TIMEOUT => 30,
+                    CURLOPT_SSL_VERIFYPEER => false,
+                    CURLOPT_SSL_VERIFYHOST => false,
+                    CURLOPT_USERAGENT => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                ]);
+                $body = curl_exec($ch);
+                $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                curl_close($ch);
+
+                if ($httpCode === 200 && is_string($body) && strlen($body) > 50) {
+                    $disk->put($relativePath, $body);
+                    return $relativePath;
+                }
+            } catch (\Exception $e) {
+                // Ignore
+            }
         }
 
         return null;
+    }
+
+    /**
+     * Properly encode URL preserving scheme and host but encoding non-ascii path characters.
+     */
+    protected function encodeUrl(string $url): string
+    {
+        $parts = parse_url($url);
+        if (! isset($parts['host'])) {
+            return $url;
+        }
+
+        $scheme = $parts['scheme'] ?? 'https';
+        $host = $parts['host'];
+        $port = isset($parts['port']) ? ':' . $parts['port'] : '';
+        $path = $parts['path'] ?? '';
+        $query = isset($parts['query']) ? '?' . $parts['query'] : '';
+
+        // Encode each segment of path
+        $segments = explode('/', $path);
+        $encodedSegments = array_map(function ($segment) {
+            return rawurlencode(rawurldecode($segment));
+        }, $segments);
+        $encodedPath = implode('/', $encodedSegments);
+
+        return "{$scheme}://{$host}{$port}{$encodedPath}{$query}";
     }
 }
