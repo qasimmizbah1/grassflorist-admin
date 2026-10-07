@@ -15,7 +15,7 @@ class EditVendorProfile extends EditRecord
 
     protected static ?string $title = 'Store Profile & Settings';
 
-    public function mount(int | string $record = null): void
+    public function mount(int | string | null $record = null): void
     {
         $vendorId = auth()->user()?->vendor?->id;
 
