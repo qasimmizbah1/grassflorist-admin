@@ -207,14 +207,23 @@ class StoreDownloadImagesCommand extends Command
         // Properly encode URL path for UTF-8 / Arabic / Spaces
         $encodedUrl = $this->encodeUrl($url);
 
-        // Method 1: Laravel Http Client with User-Agent and SSL bypass
+        // Method 1: Laravel Http Client with User-Agent, Referer, and SSL bypass
         $lastError = null;
         try {
             $response = Http::withoutVerifying()
                 ->timeout(30)
                 ->withHeaders([
                     'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                    'Referer' => 'https://grassflorist.com/',
+                    'Origin' => 'https://grassflorist.com',
                     'Accept' => 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+                    'Accept-Language' => 'en-US,en;q=0.9,ar;q=0.8',
+                    'Sec-Ch-Ua' => '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+                    'Sec-Ch-Ua-Mobile' => '?0',
+                    'Sec-Ch-Ua-Platform' => '"Windows"',
+                    'Sec-Fetch-Dest' => 'image',
+                    'Sec-Fetch-Mode' => 'no-cors',
+                    'Sec-Fetch-Site' => 'same-origin',
                 ])
                 ->get($encodedUrl);
 
@@ -240,6 +249,13 @@ class StoreDownloadImagesCommand extends Command
                     CURLOPT_SSL_VERIFYPEER => false,
                     CURLOPT_SSL_VERIFYHOST => false,
                     CURLOPT_USERAGENT => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                    CURLOPT_REFERER => 'https://grassflorist.com/',
+                    CURLOPT_HTTPHEADER => [
+                        'Referer: https://grassflorist.com/',
+                        'Origin: https://grassflorist.com',
+                        'Accept: image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+                        'Accept-Language: en-US,en;q=0.9,ar;q=0.8',
+                    ],
                 ]);
                 $body = curl_exec($ch);
                 $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
